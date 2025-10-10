@@ -1,0 +1,187 @@
+---
+title: "Introduction to MAF"
+author: Erika Li, Jeanne Revilla, Mahija Mogalipuvvu, adapted from Nicole Black, Wade Boohar
+date: 07/17/22
+updated: 9/29/2025
+---
+
+***Deliverables***
+- upload this R Notebook to your GitHub and submit the link to your Repo on Brightspace
+- include ALL graphs or figures created in this assignment in a folder with your R notebook with descriptive file names.
+
+We encourage you to work with a partner. Therefore, it is okay if your answers are the same as your partner’s as long as everyone understands it and could explain it in their own words if asked. Each person must individually push their code to Github. *At the top of your R Notebook, write the name of you and your partner(s) as a comment.*
+
+***Complete the following coding activity and answer any following questions as comments in your R Notebook***
+
+In this assignment, you will need to use your skills learned in class to demonstrate your understanding of categorical variables and R data structures.
+
+*Pre-Assignment*
+Load all necessary packages, read in the clinical data.csv file you have in your analysis_data folder, and instantiate the MAF_object.
+```{r}
+if (!require(survival)) {
+  install.packages("survival")
+}
+
+if (!require(survminer)) {
+  install.packages("survminer")
+}
+
+if (!require(ggplot2)) {
+  install.packages("ggplot2")
+}
+
+library(BiocManager)
+library(TCGAbiolinks)
+library(maftools)
+
+clinic <- read.csv("/home1/sskatta/490_cluster/analysis_data/brca_clinical_data.csv")
+
+colnames(clinic)[ colnames(clinic) == "bcr_patient_barcode" ] <-"Tumor_Sample_Barcode"
+
+maf_query <- GDCquery(
+  project = "TCGA-BRCA",
+  data.category = "Simple Nucleotide Variation",
+  access = "open",
+  data.type = "Masked Somatic Mutation",
+  workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+
+#GDCdownload(maf_query, method = "api", files.per.chunk = 100)
+maf <- GDCprepare(maf_query)
+
+maf_object <- read.maf(maf = maf, clinicalData = clinic, isTCGA = TRUE)
+
+```
+
+It's useful to save your MAF_object, so that you don't have to go through the trouble of querying and preparing it everytime. The saveRDS function allows us to save an R object, allowing us to access it directly from our files. 
+```{r}
+saveRDS(maf_object, file = "/home1/sskatta/490_cluster/analysis_data/maf_object.rds")
+# ex. saveRDS(MAF_object, file = "/home1/erika/490_cluster/analysis_data/maf_object.rds")
+```
+
+When you reopen a new R session and want to access your MAF_object, you can use the readRDS function to load the object back into a new variable.
+```{r}
+MAF_object <- readRDS(file = "/home1/sskatta/490_cluster/analysis_data/maf_object.rds")
+# ex. MAF_object <- readRDS(file = "/home1/erika/490_cluster/analysis_data/maf_object.rds")
+```
+
+*1*
+Choose a clinical variable (or any variable from clin_rad or clin_drug) to separate your populations into two different groups and rewrite the column or create a new column with that variable as a factor. ***Do not use age or vital_status as your clinical variable.*** Hint: if your variable is continuous, you will need to determine your own cutoffs for the different levels of the factor. If your variable is categorical and has more than two possible values, choose the two that are the most common.
+```{r}
+clinic <- read.csv("/home1/sskatta/490_cluster/analysis_data/brca_clinical_data.csv")
+colnames(clinic)[ colnames(clinic) == "bcr_patient_barcode" ] <-"Tumor_Sample_Barcode"
+
+
+clinic$retro_group <- ifelse(clinic$retrospective_collection == "YES", TRUE,
+                      ifelse(clinic$retrospective_collection == "NO", FALSE, NA))
+
+clinical_subset <- clinic[, c("Tumor_Sample_Barcode", "retro_group")]
+
+MAF_object@clinical.data <- merge(
+  MAF_object@clinical.data,
+  clinic[, c("Tumor_Sample_Barcode", "retro_group")],
+  by = "Tumor_Sample_Barcode",
+  all.x = TRUE
+)
+```
+
+
+*2*
+Create a co-oncoplot with the top 10-20 (you choose) most mutated genes for the two groups. Pick one that has a large discrepancy in % mutated or type of mutations between the groups and research it. 
+Research it. What is the gene used for? Can you think of any reason for the discrepancy?
+```{r}
+maf_retro_yes <- subsetMaf(maf = MAF_object, clinQuery = "retro_group == TRUE")
+maf_retro_no  <- subsetMaf(maf = MAF_object, clinQuery = "retro_group == FALSE")
+top_genes <- getGeneSummary(maf_retro_yes)$Hugo_Symbol[1:15]
+
+coOncoplot(
+  m1 = maf_retro_yes,
+  m2 = maf_retro_no,
+  m1Name = "Retrospective: Yes",
+  m2Name = "Retrospective: No",
+  genes = top_genes
+)
+
+```
+In terms of % mutated, all the genes shown seem to be quite similar between the yes and no groups of retrospective collection. This also holds true for types of mutations involved. However, there is a noticeable difference, although very small, within the MUC16 gene with a 3% difference between the two groups. The retrospective yes has 11%, while the retrospective no has 8%. Due to the relative similarity across the other genes, I'll be looking deeper into this one. The MUC16 gene encodes for the CA125 protein and is used as a biomarker for certain cancers. CA125 is a common tumor marker that allows diagnosis and monitoring of ovarian cancer, and it can promote tumor cell adhesion and spread via interactions with other proteins. The few reasons I can think of for the differences are due to random sampling variability or possibly different tumor subtype compositions. However, due to the relatively uniform mutations across both the retrospective groups, I believe this is just a matter of random sampling variability leading to this minor discrepancy observed.
+
+*3*
+Create a contingency table with your variable and chosen gene. Run a Fisher’s Exact Test between presence of mutations for that gene and your clinical variable. Create and save a mosaic plot. 
+Interpret the output of the Fisher’s Exact Test in terms of the odds ratio and p-value.
+```{r}
+mut_data <- MAF_object@data
+muc16_mutations <- mut_data[mut_data$Hugo_Symbol == "MUC16", ]
+mutated_samples <- unique(muc16_mutations$Tumor_Sample_Barcode)
+
+mutated_samples <- subsetMaf(maf = MAF_object, genes = "MUC16", mafObj = TRUE)@clinical.data$Tumor_Sample_Barcode
+MAF_object@clinical.data$MUC16_mutated <- MAF_object@clinical.data$Tumor_Sample_Barcode %in% mutated_samples
+
+contingency_table <- table(MAF_object@clinical.data$MUC16_mutated, MAF_object@clinical.data$retro_group)
+print(contingency_table)
+
+fisher_test <- fisher.test(contingency_table)
+print(fisher_test)
+
+mosaicplot(contingency_table, xlab = "MUC16 Mutation Present", ylab = "Retrospective Collection Group")
+
+png("/home1/sskatta/490_cluster/Week06_MAF/cont_table.png")
+mosaicplot(contingency_table, xlab = "MUC16 Mutation Present", ylab = "Retrospective Collection Group")
+dev.off()
+```
+In terms of the p-value, it is 0.2126, which is much higher than 0.05. Thus, the null hypothesis of no association is unable to be rejected. Therefore, there is no significantly statistical association between the presence of MUC16 mutation and the retrospective collection group. The odds ratio of 1.357683 is higher than 1, meaning that the odds of having MUC16 mutations is about 1.36 times higher in one group compared to the other. This was observed with the yes group having 3% higher than the no group. However, the p-value shows that this is not a statistically significant association but rather more likely an observation due to sampling variation.
+
+
+*4*
+Subset your maf_object based on your chosen clinical variable and create a co-lollipop plot of your chosen gene divided between the two different clinical variable possibilities. Include descriptive names on your plot.
+Do you notice any difference in terms of mutations (e.g. sites, types, number) between the two populations?
+
+```{r}
+maf_retro_yes <- subsetMaf(maf = MAF_object, tsb = MAF_object@clinical.data$Tumor_Sample_Barcode[MAF_object@clinical.data$retro_group == TRUE])
+
+maf_retro_no <- subsetMaf(maf = MAF_object, tsb = MAF_object@clinical.data$Tumor_Sample_Barcode[MAF_object@clinical.data$retro_group == FALSE])
+
+lollipopPlot2(
+  m1 = maf_retro_yes,
+  m2 = maf_retro_no,
+  m1_name = "Retrospective: Yes",
+  m2_name = "Retrospective: No",
+  gene = "MUC16"
+)
+```
+I do see a difference in terms of mutation sites, as the retrospective yes group appears to be closer together and shown across the length of the co-lollipop plot. However, the retrospective no group has mutations that are more bunched together in comparison. In terms of the type of mutations, both seem to exhibit mostly missense mutations. As for number of mutations, the retrospective yes group has more than the retrospective no group. This is observed both visually within the plot and by the percentage shown.
+
+
+*5*
+Create your Overall_Survival_Status column and create a mafSurvival KM plot based on mutations in your chosen gene.
+Does there seem to be a difference? Hypothesize why or not based on the other analysis you did with the gene above.
+
+
+```{r}
+clinic$death_days_to <- as.numeric(as.character(clinic$death_days_to))
+clinic$last_contact_days_to <- as.numeric(as.character(clinic$last_contact_days_to))
+
+clinic$survival_time <- ifelse(
+  !is.na(clinic$death_days_to),
+  clinic$death_days_to,
+  clinic$last_contact_days_to
+)
+
+clinic$Overall_Survival_Status <- ifelse(
+  clinic$vital_status == "Dead", 1,
+  ifelse(clinic$vital_status == "Alive", 0, NA)
+)
+
+idx <- match(MAF_object@clinical.data$Tumor_Sample_Barcode, clinic$Tumor_Sample_Barcode)
+
+MAF_object@clinical.data$survival_time <- clinic$survival_time[idx]
+MAF_object@clinical.data$Overall_Survival_Status <- clinic$Overall_Survival_Status[idx]
+
+mafSurvival(
+  maf = MAF_object,
+  genes = "MUC16",
+  time = "survival_time",
+  Status = "Overall_Survival_Status",
+  isTCGA = TRUE
+)
+```
+There does seem to be a difference in survival probability based on the presence of mutation within the MUC16 gene vs without. This makes sense due to it being used as a biomarker for cancer detection, so it would go without saying that it is correlated to the presence of tumors and possible cancer. Thus, survival rates and probabilities would be affected.
