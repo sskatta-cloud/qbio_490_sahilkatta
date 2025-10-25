@@ -1,0 +1,136 @@
+---
+title: "Intro to Transcriptomics"
+author: Nicole Black, Wade Boohar, Kayla Xu
+date: 07/17/22
+updated: 10/18/24
+---
+
+***Deliverables***
+-Upload this R Notebook to your GitHub and submit the link to your Repo on Brightspace.
+-Include any graphs or figures created in this assignment in the folder with your R notebook with descriptive file names.
+
+Since this is an optional partner activity, it is okay if your answers are the same as your partner’s as long as everyone understands it and could explain it in their own words if asked. Each person must individually push their code to Github. *At the top of your R Notebook, write the name of you and your partner(s) as a comment.*
+
+***Complete the following coding activity and answer any following questions as comments in your R Notebook***
+
+In SummarizedExperiment Tutorial, you learned how to manipulate the SummarizedExperiment data structure and turn it into more readable dataframes, saving them as rna_counts, rna_clinical, and rna_genes. In this semi-guided assignment, you will use these dataframes to perform differential expression analysis based on tumor status.
+
+Sahil Katta
+
+(due to my dds_object line of code not being able to run in time after numerous tries, I used Tony Yoo's image to analyze)
+
+*Pre-Assignment*
+Use knitr function to set your working directory to your analysis_data folder in 490_cluster.
+```{r setup}
+ knitr::opts_knit$set(root.dir = normalizePath("/home1/sskatta/490_cluster/analysis_data"))
+```
+
+If DESeq2 is not already installed, install it now
+```{r}
+if (!require("DESeq2", quietly = TRUE))
+BiocManager::install("DESeq2")
+
+BiocManager::install("EnhancedVolcano")
+```
+
+Load in all necessary packages
+```{r}
+library(BiocManager)
+library(TCGAbiolinks)
+library(maftools)
+library(DESeq2)
+library(EnhancedVolcano)
+```
+
+
+
+*1*
+Read in the rna_clinical, rna_genes, and rna_counts dataframes which you made in the "SummarizedExperiment Guided Tutorial" R Notebook
+
+```{r}
+rna_clinical <- read.csv("brca_rna_clinical_data.csv", row.names = 1, check.names = FALSE)
+rna_genes <- read.csv("brca_rna_gene_data.csv")
+rna_counts <- read.csv("brca_rna_count_data.csv", row.names = 1, check.names = FALSE)
+
+
+```
+
+
+*2*
+In this assignment, you will run differential expression analysis comparing patient samples by whether the sample is from a tumor or normal tissue (this is the definition column in rna_clinical). You will need to choose a variable to control for covariance of: age and/or PAM50 subtype (paper_BRCA_Subtype_PAM50). 
+
+Manipulate those columns so that they are ready for differential expression analysis (hint: what kind of variables are they? what data type are they by default? do you need to handle unknown values?) Filter out genes with a total expression across all patients less than 1000.
+```{r}
+rna_clinical$definition <- factor(rna_clinical$definition)
+#rna_clinical$paper_BRCA_Subtype_PAM50 <- factor(rna_clinical$paper_BRCA_Subtype_PAM50)
+#decided to only use age, since filtering the na values for this other variable got rid of any variation in the definition column (all the solid tissue normal were filtered out)
+rna_clinical$age_at_diagnosis <- factor(rna_clinical$age_at_diagnosis)
+
+#rna_clinical <- rna_clinical[!is.na(rna_clinical$definition) & !is.na(rna_clinical$paper_BRCA_Subtype_PAM50) & !is.na(rna_clinical$age_at_diagnosis), ]
+
+rna_clinical <- rna_clinical[!is.na(rna_clinical$definition) & !is.na(rna_clinical$age_at_diagnosis), ]
+
+rna_counts <- rna_counts[, rownames(rna_clinical)]
+
+rna_counts_numeric <- rna_counts[, -1]
+rna_counts_numeric <- as.data.frame(lapply(rna_counts_numeric, as.numeric))
+
+keep_genes <- rowSums(rna_counts_numeric) >= 1000
+filtered_rna_counts <- rna_counts[keep_genes, ]
+
+dim(filtered_rna_counts)
+dim(rna_clinical)
+
+```
+
+
+*3*
+Perform the differential expression analysis, All you need to do is fill in the appropriate # terms
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = filtered_rna_counts,
+                              colData = rna_clinical,
+                              design= ~age_at_diagnosis + definition)
+
+dds_obj <- DESeq(dds)
+
+resultsNames(dds_obj)
+
+results <- results(dds_obj, format = "DataFrame", contrast = c("definition", "Primary solid Tumor", "Solid Tissue Normal"))
+
+results <- data.frame(results)
+```
+
+Prepare results dataframe for EnhancedVolcano plotting. Add two columns, "-log10(padj)" and "gene_name". Fill in these columns appropriately.
+```{r}
+results$`-log10(padj)` <- -log10(results$padj)
+results$gene_name <- rna_genes$gene_name[match(rownames(results), rna_genes$gene_id)]
+
+significant <- sum(results$padj < 0.05, na.rm = TRUE)
+```
+
+*4*
+Now we will use the EnhancedVolcano package to plot our results. The code is already completed and should run without adjustment if all code up to here is correct.
+```{r}
+EnhancedVolcano(results,
+                lab = results$gene_name,
+                x = 'log2FoldChange',
+                y = '-log10(padj)',
+                title = 'Sample Definition: Tumor vs Normal Tissue',
+                pointSize = 1.0,
+                labSize = 5.0)
+
+print(volcano_plot)
+
+ggsave("volcano_plot.png", plot = volcano_plot, width = 10, height = 8, dpi = 300)
+```
+
+*5*
+# Explain what genes from each part of the Volcano Plot mean in terms of their significance and up/down regulation. 
+top-right genes: The top right genes show significantly upregulated in tumore samples compared to the normal tissue. The padj is less than 0.05 and log2FoldChange is greater than 1. This represents the potential onocogenes or tumor-promoting factors that may be able to be therapeutic targets.
+bottom-right genes: The bottom right right genes show upregulation in tumor samples, but these are not statistically significant due to padj being greater than or equal to 0.05, and log2FoldChange being greater than 0. These genes would need larger sample sizes in order to confirm differential expression.
+top-left genes: The top left genes are statistically significant and show downregulation in tumor samples relative to normal tissue, as the padj is less than 0.05, and log2FoldChange is less than -1. These genes may be tumor suppressor genes or genes that would be essential for normal tissue function that may be lost in cancer.
+bottom-left genes: The bottom left genes show downregulation within the tumor samples, but they are not statistically significant. This is due to padj being greater than or equal to 0.05, and the log2FoldChange being less than 0. This would mean drawing conclusions from this is not feasible due to variability and weak indications of results.
+top-middle genes: The top middle genes show differential expression while being statistically significant. They have small fold changes, and their padj is less than 0.05, and their log2FoldChange is in between -1 and 1. The true biological impact might not be as pronounced even though we can consider them to be statistically significant.
+bottom-middle genes: The bottom middle genes are not statistically significant and show small changes in expression. This is due to their padj being greater than or equal to 0.05, and the log2FoldChange is near 0. They are similar relative to within tumor and normal states.
+
+Save the picture of the volcano plot (using either ggsave() or right clicking and manually downloading the image and push this .Rmd and the image to GitHub)
